@@ -22,10 +22,35 @@ local dragStartFrame = nil
 local dragWin = nil
 local isMove = false
 local isResize = false
-local resizeEdge = nil
-local isEasyResize = false
-local lastDragUpdate = 0
+local isPotentialDrag = false
+local hasLifted = false
+local dragStartPos = nil
+local dragWin = nil
 local appWatcher = nil
+
+--- Public hook: called when a window drag or resize begins (from EasyMove or mouse)
+function StageLight.onDragStart()
+  if not config.enabled then return end
+  hasLifted = true
+  dimmer.fadeLift(0.08)
+end
+
+--- Public hook: called when a window drag or resize ends / snaps (from EasyMove, FancyZones, or mouse)
+function StageLight.onDragEnd(win, targetFrame)
+  if not config.enabled then return end
+  hasLifted = false
+  isPotentialDrag = false
+  dragWin = nil
+  dragStartPos = nil
+
+  win = win or hs.window.focusedWindow()
+  if win and win:isStandard() then
+    dimmer.update(win, targetFrame, true)
+    dimmer.fadeBloom(0.18)
+  else
+    dimmer.clearAll()
+  end
+end
 
 --- Fast window finder under mouse cursor
 local function findWindowUnderPoint(pos)
@@ -71,7 +96,7 @@ local function findWindowUnderPoint(pos)
   return nil, nil
 end
 
---- Real-time mouse event tracker for immediate spotlight tracking during drag/resize
+--- Theatrical "Lift on Drag, Bloom on Drop" mouse event tracker
 local function onMouseEvent(e)
   if not config.enabled then return false end
 
@@ -82,142 +107,63 @@ local function onMouseEvent(e)
     local win, wf = findWindowUnderPoint(pos)
 
     if not win or not wf then
-      isDragging = false
+      isPotentialDrag = false
       dragWin = nil
+      hasLifted = false
       dimmer.clearAll()
       return false
     end
 
     local flags = e:getFlags()
     local isAlt = (flags.alt == true)
-    -- Allow up to 85px from top for modern tall headers (Chrome tabs, Safari toolbar, Finder toolbar)
     local isTitlebar = (pos.y >= wf.y and pos.y <= wf.y + 85 and pos.x >= wf.x and pos.x <= wf.x + wf.w)
-
-    -- Check if user is grabbing window borders for standard macOS resize
     local margin = 10
-    local nearLeft = math.abs(pos.x - wf.x) <= margin
-    local nearRight = math.abs(pos.x - (wf.x + wf.w)) <= margin
-    local nearTop = math.abs(pos.y - wf.y) <= margin
-    local nearBottom = math.abs(pos.y - (wf.y + wf.h)) <= margin
-    local isBorderResize = (nearLeft or nearRight or nearTop or nearBottom) and not isTitlebar
+    local isNearBorder = (math.abs(pos.x - wf.x) <= margin or
+                          math.abs(pos.x - (wf.x + wf.w)) <= margin or
+                          math.abs(pos.y - wf.y) <= margin or
+                          math.abs(pos.y - (wf.y + wf.h)) <= margin)
 
-    if isAlt or isTitlebar then
-      isDragging = true
-      isMove = true
-      isResize = false
-      isEasyResize = false
-      dragStartPos = pos
-      dragStartFrame = { x = wf.x, y = wf.y, w = wf.w, h = wf.h }
-      dragWin = win
-      lastDragUpdate = hs.timer.secondsSinceEpoch()
-      -- Instantly spotlight the clicked window (active or inactive!)
-      dimmer.update(win)
-    elseif isBorderResize then
-      isDragging = true
-      isMove = false
-      isResize = true
-      isEasyResize = false
-      resizeEdge = { left = nearLeft, right = nearRight, top = nearTop, bottom = nearBottom }
-      dragStartPos = pos
-      dragStartFrame = { x = wf.x, y = wf.y, w = wf.w, h = wf.h }
-      dragWin = win
-      lastDragUpdate = hs.timer.secondsSinceEpoch()
-      dimmer.update(win)
-    else
-      isDragging = false
-      dragWin = nil
-      -- Regular click to focus window: immediately shift spotlight!
-      dimmer.update(win)
-    end
+    isPotentialDrag = (isAlt or isTitlebar or isNearBorder)
+    dragStartPos = pos
+    dragWin = win
+    hasLifted = false
+
+    -- Instantly spotlight the clicked window (active or inactive!)
+    dimmer.update(win)
 
   elseif eType == hs.eventtap.event.types.rightMouseDown then
     local flags = e:getFlags()
     if flags.alt then
-      -- EasyMove right-click resize
+      -- EasyMove right-click resize initiation
       local pos = hs.mouse.absolutePosition()
       local win, wf = findWindowUnderPoint(pos)
       if win and wf then
-        isDragging = true
-        isEasyResize = true
-        isMove = false
-        isResize = false
+        isPotentialDrag = true
         dragWin = win
-        dragStartFrame = wf
-        lastDragUpdate = hs.timer.secondsSinceEpoch()
+        dragStartPos = pos
+        hasLifted = false
         dimmer.update(win)
       end
     end
 
-  elseif eType == hs.eventtap.event.types.leftMouseDragged then
-    if isDragging and dragWin and dragStartFrame and dragStartPos then
-      local flags = e:getFlags()
+  elseif eType == hs.eventtap.event.types.leftMouseDragged or eType == hs.eventtap.event.types.rightMouseDragged then
+    if isPotentialDrag and not hasLifted and dragStartPos then
       local pos = hs.mouse.absolutePosition()
-
-      if flags.alt then
-        -- EasyMove is actively moving/resizing the window: read exact live frame!
-        local curF = dragWin:frame()
-        if curF then
-          dimmer.update(dragWin, curF)
-        end
-      else
-        -- Standard macOS title bar drag or window border resize:
-        local dx = pos.x - dragStartPos.x
-        local dy = pos.y - dragStartPos.y
-
-        if isMove then
-          local liveFrame = {
-            x = dragStartFrame.x + dx,
-            y = dragStartFrame.y + dy,
-            w = dragStartFrame.w,
-            h = dragStartFrame.h,
-          }
-          dimmer.update(dragWin, liveFrame)
-        elseif isResize and resizeEdge then
-          local f = dragStartFrame
-          local x, y, w, h = f.x, f.y, f.w, f.h
-          if resizeEdge.right then w = math.max(160, f.w + dx) end
-          if resizeEdge.bottom then h = math.max(100, f.h + dy) end
-          if resizeEdge.left then
-            local newW = math.max(160, f.w - dx)
-            x = f.x + (f.w - newW)
-            w = newW
-          end
-          if resizeEdge.top then
-            local newH = math.max(100, f.h - dy)
-            y = f.y + (f.h - newH)
-            h = newH
-          end
-          dimmer.update(dragWin, { x = x, y = y, w = w, h = h })
-        end
-      end
-    end
-
-  elseif eType == hs.eventtap.event.types.rightMouseDragged then
-    if isDragging and isEasyResize and dragWin then
-      local curFrame = dragWin:frame()
-      if curFrame then
-        dimmer.update(dragWin, curFrame)
+      if math.abs(pos.x - dragStartPos.x) > 3 or math.abs(pos.y - dragStartPos.y) > 3 then
+        -- User has moved mouse > 3px: Window movement has begun! Lift veil cleanly!
+        StageLight.onDragStart()
       end
     end
 
   elseif eType == hs.eventtap.event.types.leftMouseUp or eType == hs.eventtap.event.types.rightMouseUp then
-    if isDragging or dragWin then
-      local win = dragWin
-      isDragging = false
+    if hasLifted then
+      -- Drag finished! Bloom spotlight onto dropped / snapped window!
+      StageLight.onDragEnd(dragWin or hs.window.focusedWindow())
+    else
+      -- Regular click to focus without dragging
+      isPotentialDrag = false
       dragWin = nil
-      dragStartPos = nil
-      dragStartFrame = nil
-      resizeEdge = nil
-      isEasyResize = false
-
-      -- 1. Immediate synchronous frame commit (0ms lag!)
-      if win then
-        dimmer.update(win)
-        -- 2. Fast follow-up (5ms) for FancyZones snap commit
-        hs.timer.doAfter(0.005, function()
-          dimmer.update(win or hs.window.focusedWindow())
-        end)
-      end
+      dimmer.update(hs.window.focusedWindow())
     end
   end
 
@@ -226,7 +172,7 @@ end
 
 --- Handle window move from keyboard or external window managers (Rectangle, Raycast, FancyZones)
 local function handleWindowMoved(win)
-  if not config.enabled then return end
+  if not config.enabled or hasLifted then return end
   dimmer.update(win)
 end
 

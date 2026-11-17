@@ -87,8 +87,28 @@ function Dimmer.clearAll()
   lastWinFrame = nil
 end
 
+--- Smoothly lift (fade out) the dimming veil when dragging begins
+function Dimmer.fadeLift(duration)
+  duration = duration or 0.08
+  for _, entry in pairs(canvases) do
+    if entry.canvas and entry.canvas:isShowing() then
+      entry.canvas:hide(duration)
+    end
+  end
+end
+
+--- Smoothly bloom (fade in) the spotlight when window is dropped/snapped
+function Dimmer.fadeBloom(duration)
+  duration = duration or 0.18
+  for _, entry in pairs(canvases) do
+    if entry.canvas then
+      entry.canvas:show(duration)
+    end
+  end
+end
+
 --- Update the spotlight cutout around the focused window
-function Dimmer.update(win, overrideFrame)
+function Dimmer.update(win, overrideFrame, skipShow)
   if not config.enabled then
     Dimmer.clearAll()
     return
@@ -233,7 +253,7 @@ function Dimmer.update(win, overrideFrame)
       end
     end
 
-    if not c:isShowing() then
+    if not skipShow and not c:isShowing() then
       c:show()
     end
   end
