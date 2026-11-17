@@ -135,10 +135,17 @@ local function onMouseEvent(e)
 
   elseif eType == hs.eventtap.event.types.leftMouseDragged then
     if isDragging and dragWin and dragStartFrame and dragStartPos then
-      local now = hs.timer.secondsSinceEpoch()
-      if now - lastDragUpdate >= 0.008 then -- ~120fps gate
-        lastDragUpdate = now
-        local pos = hs.mouse.absolutePosition()
+      local flags = e:getFlags()
+      local pos = hs.mouse.absolutePosition()
+
+      if flags.alt then
+        -- EasyMove is actively moving/resizing the window: read exact live frame!
+        local curF = dragWin:frame()
+        if curF then
+          dimmer.update(dragWin, curF)
+        end
+      else
+        -- Standard macOS title bar drag or window border resize:
         local dx = pos.x - dragStartPos.x
         local dy = pos.y - dragStartPos.y
 
@@ -172,13 +179,9 @@ local function onMouseEvent(e)
 
   elseif eType == hs.eventtap.event.types.rightMouseDragged then
     if isDragging and isEasyResize and dragWin then
-      local now = hs.timer.secondsSinceEpoch()
-      if now - lastDragUpdate >= 0.008 then
-        lastDragUpdate = now
-        local curFrame = dragWin:frame()
-        if curFrame then
-          dimmer.update(dragWin, curFrame)
-        end
+      local curFrame = dragWin:frame()
+      if curFrame then
+        dimmer.update(dragWin, curFrame)
       end
     end
 
@@ -192,19 +195,23 @@ local function onMouseEvent(e)
       resizeEdge = nil
       isEasyResize = false
 
-      -- Commit to actual final frame after macOS commits the drag
-      hs.timer.doAfter(0.03, function()
-        dimmer.update(win or hs.window.focusedWindow())
-      end)
+      -- 1. Immediate synchronous frame commit (0ms lag!)
+      if win then
+        dimmer.update(win)
+        -- 2. Fast follow-up (5ms) for FancyZones snap commit
+        hs.timer.doAfter(0.005, function()
+          dimmer.update(win or hs.window.focusedWindow())
+        end)
+      end
     end
   end
 
   return false
 end
 
---- Handle window move from keyboard or external window managers (Rectangle, Raycast)
+--- Handle window move from keyboard or external window managers (Rectangle, Raycast, FancyZones)
 local function handleWindowMoved(win)
-  if not config.enabled or isDragging then return end
+  if not config.enabled then return end
   dimmer.update(win)
 end
 
