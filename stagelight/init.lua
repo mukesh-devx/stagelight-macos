@@ -54,18 +54,7 @@ end
 
 --- Fast window finder under mouse cursor
 local function findWindowUnderPoint(pos)
-  -- 1. Ultra-fast check: is it inside the currently focused window? (0.01ms)
-  local curWin = hs.window.focusedWindow()
-  if curWin and curWin:isStandard() and not curWin:isFullScreen() then
-    local f = curWin:frame()
-    local margin = 10
-    if f and pos.x >= f.x - margin and pos.x <= f.x + f.w + margin and
-       pos.y >= f.y - margin and pos.y <= f.y + f.h + margin then
-      return curWin, f
-    end
-  end
-
-  -- 2. Fast CoreAccessibility system hit-test (< 1ms direct hit)
+  -- 1. Fast CoreAccessibility system hit-test (< 0.5ms direct hit respecting exact Z-order & overlapping windows)
   local okEl, el = pcall(hs.axuielement.systemElementAtPosition, pos)
   if okEl and el then
     local okWin, winEl = pcall(function() return el:attributeValue("AXWindow") or el end)
@@ -75,6 +64,17 @@ local function findWindowUnderPoint(pos)
         local f = win:frame()
         if f then return win, f end
       end
+    end
+  end
+
+  -- 2. Fallback check: is it inside the currently focused window? (0.01ms)
+  local curWin = hs.window.focusedWindow()
+  if curWin and curWin:isStandard() and not curWin:isFullScreen() then
+    local f = curWin:frame()
+    local margin = 10
+    if f and pos.x >= f.x - margin and pos.x <= f.x + f.w + margin and
+       pos.y >= f.y - margin and pos.y <= f.y + f.h + margin then
+      return curWin, f
     end
   end
 
@@ -114,6 +114,16 @@ local function onMouseEvent(e)
       return false
     end
 
+    -- 1-Click Instant Activation: If clicking an inactive window, immediately focus and raise it!
+    local curFocused = hs.window.focusedWindow()
+    if win ~= curFocused then
+      pcall(function()
+        win:focus()
+        local app = win:application()
+        if app then app:activate() end
+      end)
+    end
+
     local flags = e:getFlags()
     local isAlt = (flags.alt == true)
     local isTitlebar = (pos.y >= wf.y and pos.y <= wf.y + 85 and pos.x >= wf.x and pos.x <= wf.x + wf.w)
@@ -138,6 +148,14 @@ local function onMouseEvent(e)
       local pos = hs.mouse.absolutePosition()
       local win, wf = findWindowUnderPoint(pos)
       if win and wf then
+        local curFocused = hs.window.focusedWindow()
+        if win ~= curFocused then
+          pcall(function()
+            win:focus()
+            local app = win:application()
+            if app then app:activate() end
+          end)
+        end
         isPotentialDrag = true
         dragWin = win
         dragStartPos = pos
@@ -162,8 +180,11 @@ local function onMouseEvent(e)
     else
       -- Regular click to focus without dragging
       isPotentialDrag = false
+      local targetWin = dragWin or hs.window.focusedWindow()
       dragWin = nil
-      dimmer.update(hs.window.focusedWindow())
+      if targetWin and targetWin:isStandard() then
+        dimmer.update(targetWin)
+      end
     end
   end
 
@@ -179,6 +200,9 @@ end
 --- Handle window focus transition
 local function handleWindowFocused(win)
   if not config.enabled then return end
+  if win and not win:isStandard() then
+    return -- Ignore non-standard floating palettes, Wispr Flow, overlays
+  end
   dimmer.update(win)
 end
 

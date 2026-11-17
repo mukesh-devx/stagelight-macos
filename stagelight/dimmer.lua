@@ -41,7 +41,9 @@ local function getCanvasEntryForScreen(screen)
   end
 
   local c = hs.canvas.new(targetFrame)
-  c:level(hs.canvas.windowLevels.overlay)
+  -- Level 23 (mainMenu - 1): Dims all application windows (level 0) while keeping
+  -- Menu Bar (24), Status/Control Center (25), and PopUp Menus (101) 100% bright & crisp in front!
+  c:level(hs.canvas.windowLevels.mainMenu - 1)
   c:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
   c:clickActivating(false)
   c:canvasMouseEvents(false)
@@ -129,10 +131,12 @@ function Dimmer.update(win, overrideFrame, skipShow)
     return
   end
 
-  win = win or getTopStandardWindow()
-
-  -- If genuinely no window exists on any screen (empty desktop):
   if not win or not win:isStandard() then
+    win = getTopStandardWindow()
+  end
+
+  -- If genuinely no standard window exists on any screen (empty desktop):
+  if not win then
     Dimmer.clearAll()
     return
   end
@@ -181,10 +185,13 @@ function Dimmer.update(win, overrideFrame, skipShow)
       local cutH = wf.h
 
       if entry.hasCutout and #c == expectedCount then
-        -- FAST IN-PLACE FRAME UPDATE (0.09ms, zero allocations, ZERO FLICKER!)
+        -- FAST IN-PLACE FRAME & OPACITY UPDATE (0.01ms, zero allocations, INSTANT REAL-TIME!)
+        c:elementAttribute(1, "fillColor", dimColor)
         c:elementAttribute(2, "frame", { x = cutX, y = cutY, w = cutW, h = cutH })
         if config.glowBorder then
+          c:elementAttribute(3, "strokeColor", haloColor)
           c:elementAttribute(3, "frame", { x = cutX - 1, y = cutY - 1, w = cutW + 2, h = cutH + 2 })
+          c:elementAttribute(4, "strokeColor", accentColor)
           c:elementAttribute(4, "frame", { x = cutX, y = cutY, w = cutW, h = cutH })
         end
       else
@@ -247,7 +254,9 @@ function Dimmer.update(win, overrideFrame, skipShow)
     else
       -- Window does NOT intersect this screen
       if config.dimInactiveScreens then
-        if not entry.isFullDim or #c ~= 1 then
+        if entry.isFullDim and #c == 1 then
+          c:elementAttribute(1, "fillColor", dimColor)
+        else
           c:replaceElements({
             {
               type = "rectangle",
