@@ -12,7 +12,7 @@ local Config = {
   -- Active window spotlight glow
   glowBorder = true,          -- Apple-style glowing border around active window
   borderWidth = 2.0,          -- Border thickness (pts)
-  borderRadius = 10,          -- Corner curve matching macOS windows (pts)
+  borderRadius = 10.5,        -- Corner curve matching macOS windows (10.5pts)
   accentColorName = "blue",   -- Default accent color
   accentColors = {
     blue = { hex = "#0A84FF", name = "Electric Blue" },

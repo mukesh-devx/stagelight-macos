@@ -83,7 +83,7 @@ function Dimmer.clearAll()
 end
 
 --- Update the spotlight cutout around the focused window
-function Dimmer.update(win)
+function Dimmer.update(win, overrideFrame)
   if not config.enabled then
     Dimmer.clearAll()
     return
@@ -103,7 +103,7 @@ function Dimmer.update(win)
     return
   end
 
-  local wf = win:frame()
+  local wf = overrideFrame or win:frame()
   if not wf or wf.w <= 0 or wf.h <= 0 then
     Dimmer.clearAll()
     return
@@ -134,60 +134,40 @@ function Dimmer.update(win)
     local elements = {}
 
     if x1 < x2 and y1 < y2 then
-      -- Window intersects this screen! Cut out the active window area
-      local cutX = x1 - sf.x
-      local cutY = y1 - sf.y
-      local cutW = x2 - x1
-      local cutH = y2 - y1
+      -- Window intersects this screen!
+      local cutX = wf.x - sf.x
+      local cutY = wf.y - sf.y
+      local cutW = wf.w
+      local cutH = wf.h
 
-      -- 1. Top dimming rectangle
-      if cutY > 0 then
-        table.insert(elements, {
-          type = "rectangle",
-          action = "fill",
-          fillColor = dimColor,
-          frame = { x = 0, y = 0, w = sf.w, h = cutY },
-        })
-      end
+      -- 1. Full dimmed veil covering screen
+      table.insert(elements, {
+        type = "rectangle",
+        action = "fill",
+        fillColor = dimColor,
+        frame = { x = 0, y = 0, w = sf.w, h = sf.h },
+      })
 
-      -- 2. Bottom dimming rectangle
-      local bottomH = sf.h - (cutY + cutH)
-      if bottomH > 0 then
-        table.insert(elements, {
-          type = "rectangle",
-          action = "fill",
-          fillColor = dimColor,
-          frame = { x = 0, y = cutY + cutH, w = sf.w, h = bottomH },
-        })
-      end
+      -- 2. Clear rounded hole punch matching native macOS window curve
+      table.insert(elements, {
+        type = "rectangle",
+        action = "fill",
+        compositeRule = "clear",
+        fillColor = { white = 1.0, alpha = 1.0 },
+        roundedRectRadii = {
+          xRadius = config.borderRadius,
+          yRadius = config.borderRadius,
+        },
+        frame = { x = cutX, y = cutY, w = cutW, h = cutH },
+      })
 
-      -- 3. Left dimming rectangle
-      if cutX > 0 then
-        table.insert(elements, {
-          type = "rectangle",
-          action = "fill",
-          fillColor = dimColor,
-          frame = { x = 0, y = cutY, w = cutX, h = cutH },
-        })
-      end
-
-      -- 4. Right dimming rectangle
-      local rightW = sf.w - (cutX + cutW)
-      if rightW > 0 then
-        table.insert(elements, {
-          type = "rectangle",
-          action = "fill",
-          fillColor = dimColor,
-          frame = { x = cutX + cutW, y = cutY, w = rightW, h = cutH },
-        })
-      end
-
-      -- 5. Apple-style Glowing Accent Border
+      -- 3. Apple-style Glowing Accent Border
       if config.glowBorder then
         -- Outer soft halo
         table.insert(elements, {
           type = "rectangle",
           action = "stroke",
+          compositeRule = "sourceOver",
           strokeColor = haloColor,
           strokeWidth = 3,
           roundedRectRadii = {
@@ -200,6 +180,7 @@ function Dimmer.update(win)
         table.insert(elements, {
           type = "rectangle",
           action = "stroke",
+          compositeRule = "sourceOver",
           strokeColor = accentColor,
           strokeWidth = config.borderWidth,
           roundedRectRadii = {

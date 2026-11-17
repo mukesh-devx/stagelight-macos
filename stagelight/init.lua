@@ -15,26 +15,166 @@ StageLight._VERSION = "1.0.0"
 
 local windowFilter = nil
 local hotkeys = {}
-local pendingMoveTimer = nil
-local lastMoveUpdate = 0
+local dragTap = nil
+local isDragging = false
+local dragStartPos = nil
+local dragStartFrame = nil
+local dragWin = nil
+local isMove = false
+local isResize = false
+local resizeEdge = nil
+local isEasyResize = false
+local lastDragUpdate = 0
 
---- Throttled update during window dragging/resizing
-local function handleWindowMoved(win)
-  if not config.enabled then return end
-  local now = hs.timer.secondsSinceEpoch()
-  if now - lastMoveUpdate >= config.moveThrottle then
-    lastMoveUpdate = now
-    dimmer.update(win)
-  else
-    if not pendingMoveTimer then
-      local delay = config.moveThrottle - (now - lastMoveUpdate)
-      pendingMoveTimer = hs.timer.doAfter(math.max(0.005, delay), function()
-        pendingMoveTimer = nil
-        lastMoveUpdate = hs.timer.secondsSinceEpoch()
+--- Real-time 120Hz mouse event tracker for immediate spotlight tracking during drag/resize
+local function onMouseEvent(e)
+  if not config.enabled then return false end
+
+  local eType = e:getType()
+
+  if eType == hs.eventtap.event.types.leftMouseDown then
+    local win = hs.window.focusedWindow()
+    if not win or not win:isStandard() then
+      isDragging = false
+      return false
+    end
+
+    local wf = win:frame()
+    if not wf then return false end
+
+    local pos = hs.mouse.getAbsolutePosition()
+    local flags = e:getFlags()
+
+    local margin = 10
+    local inBounds = (pos.x >= wf.x - margin and pos.x <= wf.x + wf.w + margin and
+                      pos.y >= wf.y - margin and pos.y <= wf.y + wf.h + margin)
+    if not inBounds then
+      isDragging = false
+      return false
+    end
+
+    local isAlt = (flags.alt == true)
+    local isTitlebar = (pos.y >= wf.y and pos.y <= wf.y + 44 and pos.x >= wf.x and pos.x <= wf.x + wf.w)
+
+    -- Check if user is grabbing window borders for standard macOS resize
+    local nearLeft = math.abs(pos.x - wf.x) <= margin
+    local nearRight = math.abs(pos.x - (wf.x + wf.w)) <= margin
+    local nearTop = math.abs(pos.y - wf.y) <= margin
+    local nearBottom = math.abs(pos.y - (wf.y + wf.h)) <= margin
+    local isBorderResize = (nearLeft or nearRight or nearTop or nearBottom) and not isTitlebar
+
+    if isAlt or isTitlebar then
+      isDragging = true
+      isMove = true
+      isResize = false
+      isEasyResize = false
+      dragStartPos = pos
+      dragStartFrame = { x = wf.x, y = wf.y, w = wf.w, h = wf.h }
+      dragWin = win
+      lastDragUpdate = hs.timer.secondsSinceEpoch()
+    elseif isBorderResize then
+      isDragging = true
+      isMove = false
+      isResize = true
+      isEasyResize = false
+      resizeEdge = { left = nearLeft, right = nearRight, top = nearTop, bottom = nearBottom }
+      dragStartPos = pos
+      dragStartFrame = { x = wf.x, y = wf.y, w = wf.w, h = wf.h }
+      dragWin = win
+      lastDragUpdate = hs.timer.secondsSinceEpoch()
+    else
+      isDragging = false
+    end
+
+  elseif eType == hs.eventtap.event.types.rightMouseDown then
+    local flags = e:getFlags()
+    if flags.alt then
+      -- EasyMove right-click resize
+      local win = hs.window.focusedWindow()
+      if win and win:isStandard() then
+        isDragging = true
+        isEasyResize = true
+        isMove = false
+        isResize = false
+        dragWin = win
+        dragStartFrame = win:frame()
+        lastDragUpdate = hs.timer.secondsSinceEpoch()
+      end
+    end
+
+  elseif eType == hs.eventtap.event.types.leftMouseDragged then
+    if isDragging and dragWin and dragStartFrame and dragStartPos then
+      local now = hs.timer.secondsSinceEpoch()
+      if now - lastDragUpdate >= 0.008 then -- ~120fps gate
+        lastDragUpdate = now
+        local pos = hs.mouse.getAbsolutePosition()
+        local dx = pos.x - dragStartPos.x
+        local dy = pos.y - dragStartPos.y
+
+        if isMove then
+          local liveFrame = {
+            x = dragStartFrame.x + dx,
+            y = dragStartFrame.y + dy,
+            w = dragStartFrame.w,
+            h = dragStartFrame.h,
+          }
+          dimmer.update(dragWin, liveFrame)
+        elseif isResize and resizeEdge then
+          local f = dragStartFrame
+          local x, y, w, h = f.x, f.y, f.w, f.h
+          if resizeEdge.right then w = math.max(160, f.w + dx) end
+          if resizeEdge.bottom then h = math.max(100, f.h + dy) end
+          if resizeEdge.left then
+            local newW = math.max(160, f.w - dx)
+            x = f.x + (f.w - newW)
+            w = newW
+          end
+          if resizeEdge.top then
+            local newH = math.max(100, f.h - dy)
+            y = f.y + (f.h - newH)
+            h = newH
+          end
+          dimmer.update(dragWin, { x = x, y = y, w = w, h = h })
+        end
+      end
+    end
+
+  elseif eType == hs.eventtap.event.types.rightMouseDragged then
+    if isDragging and isEasyResize and dragWin then
+      local now = hs.timer.secondsSinceEpoch()
+      if now - lastDragUpdate >= 0.008 then
+        lastDragUpdate = now
+        local curFrame = dragWin:frame()
+        if curFrame then
+          dimmer.update(dragWin, curFrame)
+        end
+      end
+    end
+
+  elseif eType == hs.eventtap.event.types.leftMouseUp or eType == hs.eventtap.event.types.rightMouseUp then
+    if isDragging then
+      local win = dragWin
+      isDragging = false
+      dragWin = nil
+      dragStartPos = nil
+      dragStartFrame = nil
+      resizeEdge = nil
+      isEasyResize = false
+
+      -- Commit to actual final frame after macOS commits the drag
+      hs.timer.doAfter(0.02, function()
         dimmer.update(win or hs.window.focusedWindow())
       end)
     end
   end
+
+  return false
+end
+
+--- Handle window move from keyboard or external window managers (Rectangle, Raycast)
+local function handleWindowMoved(win)
+  if not config.enabled or isDragging then return end
+  dimmer.update(win)
 end
 
 --- Handle window focus transition
@@ -202,12 +342,30 @@ function StageLight.start(userConfig)
   -- Bind hotkeys
   bindHotkeys()
 
+  -- Start real-time drag tracking tap for 120Hz smooth spotlight following
+  if not dragTap then
+    dragTap = hs.eventtap.new({
+      hs.eventtap.event.types.leftMouseDown,
+      hs.eventtap.event.types.leftMouseDragged,
+      hs.eventtap.event.types.leftMouseUp,
+      hs.eventtap.event.types.rightMouseDown,
+      hs.eventtap.event.types.rightMouseDragged,
+      hs.eventtap.event.types.rightMouseUp,
+    }, onMouseEvent)
+    dragTap:start()
+  end
+
   log.i("StageLight started successfully")
   return StageLight
 end
 
 --- Stop StageLight and release all resources
 function StageLight.stop()
+  if dragTap then
+    dragTap:stop()
+    dragTap = nil
+  end
+
   if windowFilter then
     windowFilter:unsubscribeAll()
     windowFilter = nil
