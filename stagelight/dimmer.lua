@@ -107,6 +107,21 @@ function Dimmer.fadeBloom(duration)
   end
 end
 
+--- Find the top-most visible standard window across all screens
+local function getTopStandardWindow()
+  local cur = hs.window.focusedWindow()
+  if cur and cur:isStandard() and not cur:isFullScreen() and not cur:isMinimized() then
+    return cur
+  end
+  local wins = hs.window.orderedWindows()
+  for _, w in ipairs(wins) do
+    if w:isStandard() and not w:isFullScreen() and not w:isMinimized() and w:isVisible() then
+      return w
+    end
+  end
+  return nil
+end
+
 --- Update the spotlight cutout around the focused window
 function Dimmer.update(win, overrideFrame, skipShow)
   if not config.enabled then
@@ -114,9 +129,9 @@ function Dimmer.update(win, overrideFrame, skipShow)
     return
   end
 
-  win = win or hs.window.focusedWindow()
+  win = win or getTopStandardWindow()
 
-  -- If no window or non-standard window (e.g. desktop click, menubar, daemon)
+  -- If genuinely no window exists on any screen (empty desktop):
   if not win or not win:isStandard() then
     Dimmer.clearAll()
     return

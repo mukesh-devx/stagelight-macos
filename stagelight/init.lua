@@ -110,7 +110,7 @@ local function onMouseEvent(e)
       isPotentialDrag = false
       dragWin = nil
       hasLifted = false
-      dimmer.clearAll()
+      -- Preserve ambient dimming veil when clicking Dock, Menubar, or System items
       return false
     end
 
@@ -185,8 +185,9 @@ end
 --- Handle window closed / hidden / minimized
 local function handleWindowClosed()
   if not config.enabled then return end
-  hs.timer.doAfter(0.05, function()
-    dimmer.update(hs.window.focusedWindow())
+  -- Instantly spotlight the next available top window on screen
+  hs.timer.doAfter(0.02, function()
+    dimmer.update()
   end)
 end
 
