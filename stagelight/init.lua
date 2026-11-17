@@ -25,10 +25,11 @@ local isResize = false
 local resizeEdge = nil
 local isEasyResize = false
 local lastDragUpdate = 0
+local appWatcher = nil
 
---- Find standard window under mouse cursor (checks focused window first for 0.01ms speed)
+--- Fast window finder under mouse cursor
 local function findWindowUnderPoint(pos)
-  -- 1. Fast check: is it inside the currently focused window?
+  -- 1. Ultra-fast check: is it inside the currently focused window? (0.01ms)
   local curWin = hs.window.focusedWindow()
   if curWin and curWin:isStandard() and not curWin:isFullScreen() then
     local f = curWin:frame()
@@ -39,7 +40,20 @@ local function findWindowUnderPoint(pos)
     end
   end
 
-  -- 2. Check front-to-back ordered windows (for inactive window clicks)
+  -- 2. Fast CoreAccessibility system hit-test (< 1ms direct hit)
+  local okEl, el = pcall(hs.axuielement.systemElementAtPosition, pos)
+  if okEl and el then
+    local okWin, winEl = pcall(function() return el:attributeValue("AXWindow") or el end)
+    if okWin and winEl then
+      local okHS, win = pcall(function() return winEl:asHSWindow() end)
+      if okHS and win and win:isStandard() and not win:isFullScreen() then
+        local f = win:frame()
+        if f then return win, f end
+      end
+    end
+  end
+
+  -- 3. Fallback check across ordered windows if AX hit-test returned a sub-control
   local allWins = hs.window.orderedWindows()
   for _, w in ipairs(allWins) do
     if w ~= curWin then
@@ -57,7 +71,7 @@ local function findWindowUnderPoint(pos)
   return nil, nil
 end
 
---- Real-time 120Hz mouse event tracker for immediate spotlight tracking during drag/resize
+--- Real-time mouse event tracker for immediate spotlight tracking during drag/resize
 local function onMouseEvent(e)
   if not config.enabled then return false end
 
@@ -76,7 +90,8 @@ local function onMouseEvent(e)
 
     local flags = e:getFlags()
     local isAlt = (flags.alt == true)
-    local isTitlebar = (pos.y >= wf.y and pos.y <= wf.y + 44 and pos.x >= wf.x and pos.x <= wf.x + wf.w)
+    -- Allow up to 85px from top for modern tall headers (Chrome tabs, Safari toolbar, Finder toolbar)
+    local isTitlebar = (pos.y >= wf.y and pos.y <= wf.y + 85 and pos.x >= wf.x and pos.x <= wf.x + wf.w)
 
     -- Check if user is grabbing window borders for standard macOS resize
     local margin = 10
@@ -338,6 +353,12 @@ local function bindHotkeys()
   end
 end
 
+--- Public hook for external window movers (EasyMove, FancyZones)
+function StageLight.onWindowMoved(win, frame)
+  if not config.enabled then return end
+  dimmer.update(win, frame)
+end
+
 --- Start StageLight
 function StageLight.start(userConfig)
   config.load()
@@ -360,6 +381,20 @@ function StageLight.start(userConfig)
 
   -- Start menubar item
   menubar.start()
+
+  -- Application watcher for instant 0ms focus switching on app activation / Cmd+Tab / Dock click
+  if not appWatcher then
+    appWatcher = hs.application.watcher.new(function(appName, eventType, app)
+      if not config.enabled then return end
+      if eventType == hs.application.watcher.activated then
+        local win = app and (app:mainWindow() or app:focusedWindow()) or hs.window.focusedWindow()
+        if win and win:isStandard() then
+          dimmer.update(win)
+        end
+      end
+    end)
+    appWatcher:start()
+  end
 
   -- Set up window filter to track focus and movement
   if not windowFilter then
@@ -399,6 +434,11 @@ end
 
 --- Stop StageLight and release all resources
 function StageLight.stop()
+  if appWatcher then
+    appWatcher:stop()
+    appWatcher = nil
+  end
+
   if dragTap then
     dragTap:stop()
     dragTap = nil
