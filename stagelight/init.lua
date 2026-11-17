@@ -26,6 +26,37 @@ local resizeEdge = nil
 local isEasyResize = false
 local lastDragUpdate = 0
 
+--- Find standard window under mouse cursor (checks focused window first for 0.01ms speed)
+local function findWindowUnderPoint(pos)
+  -- 1. Fast check: is it inside the currently focused window?
+  local curWin = hs.window.focusedWindow()
+  if curWin and curWin:isStandard() and not curWin:isFullScreen() then
+    local f = curWin:frame()
+    local margin = 10
+    if f and pos.x >= f.x - margin and pos.x <= f.x + f.w + margin and
+       pos.y >= f.y - margin and pos.y <= f.y + f.h + margin then
+      return curWin, f
+    end
+  end
+
+  -- 2. Check front-to-back ordered windows (for inactive window clicks)
+  local allWins = hs.window.orderedWindows()
+  for _, w in ipairs(allWins) do
+    if w ~= curWin then
+      local f = w:frame()
+      local margin = 10
+      if f and pos.x >= f.x - margin and pos.x <= f.x + f.w + margin and
+         pos.y >= f.y - margin and pos.y <= f.y + f.h + margin then
+        if w:isStandard() and not w:isFullScreen() then
+          return w, f
+        end
+      end
+    end
+  end
+
+  return nil, nil
+end
+
 --- Real-time 120Hz mouse event tracker for immediate spotlight tracking during drag/resize
 local function onMouseEvent(e)
   if not config.enabled then return false end
@@ -33,30 +64,22 @@ local function onMouseEvent(e)
   local eType = e:getType()
 
   if eType == hs.eventtap.event.types.leftMouseDown then
-    local win = hs.window.focusedWindow()
-    if not win or not win:isStandard() then
+    local pos = hs.mouse.absolutePosition()
+    local win, wf = findWindowUnderPoint(pos)
+
+    if not win or not wf then
       isDragging = false
+      dragWin = nil
+      dimmer.clearAll()
       return false
     end
 
-    local wf = win:frame()
-    if not wf then return false end
-
-    local pos = hs.mouse.getAbsolutePosition()
     local flags = e:getFlags()
-
-    local margin = 10
-    local inBounds = (pos.x >= wf.x - margin and pos.x <= wf.x + wf.w + margin and
-                      pos.y >= wf.y - margin and pos.y <= wf.y + wf.h + margin)
-    if not inBounds then
-      isDragging = false
-      return false
-    end
-
     local isAlt = (flags.alt == true)
     local isTitlebar = (pos.y >= wf.y and pos.y <= wf.y + 44 and pos.x >= wf.x and pos.x <= wf.x + wf.w)
 
     -- Check if user is grabbing window borders for standard macOS resize
+    local margin = 10
     local nearLeft = math.abs(pos.x - wf.x) <= margin
     local nearRight = math.abs(pos.x - (wf.x + wf.w)) <= margin
     local nearTop = math.abs(pos.y - wf.y) <= margin
@@ -72,6 +95,8 @@ local function onMouseEvent(e)
       dragStartFrame = { x = wf.x, y = wf.y, w = wf.w, h = wf.h }
       dragWin = win
       lastDragUpdate = hs.timer.secondsSinceEpoch()
+      -- Instantly spotlight the clicked window (active or inactive!)
+      dimmer.update(win)
     elseif isBorderResize then
       isDragging = true
       isMove = false
@@ -82,23 +107,29 @@ local function onMouseEvent(e)
       dragStartFrame = { x = wf.x, y = wf.y, w = wf.w, h = wf.h }
       dragWin = win
       lastDragUpdate = hs.timer.secondsSinceEpoch()
+      dimmer.update(win)
     else
       isDragging = false
+      dragWin = nil
+      -- Regular click to focus window: immediately shift spotlight!
+      dimmer.update(win)
     end
 
   elseif eType == hs.eventtap.event.types.rightMouseDown then
     local flags = e:getFlags()
     if flags.alt then
       -- EasyMove right-click resize
-      local win = hs.window.focusedWindow()
-      if win and win:isStandard() then
+      local pos = hs.mouse.absolutePosition()
+      local win, wf = findWindowUnderPoint(pos)
+      if win and wf then
         isDragging = true
         isEasyResize = true
         isMove = false
         isResize = false
         dragWin = win
-        dragStartFrame = win:frame()
+        dragStartFrame = wf
         lastDragUpdate = hs.timer.secondsSinceEpoch()
+        dimmer.update(win)
       end
     end
 
@@ -107,7 +138,7 @@ local function onMouseEvent(e)
       local now = hs.timer.secondsSinceEpoch()
       if now - lastDragUpdate >= 0.008 then -- ~120fps gate
         lastDragUpdate = now
-        local pos = hs.mouse.getAbsolutePosition()
+        local pos = hs.mouse.absolutePosition()
         local dx = pos.x - dragStartPos.x
         local dy = pos.y - dragStartPos.y
 
@@ -152,7 +183,7 @@ local function onMouseEvent(e)
     end
 
   elseif eType == hs.eventtap.event.types.leftMouseUp or eType == hs.eventtap.event.types.rightMouseUp then
-    if isDragging then
+    if isDragging or dragWin then
       local win = dragWin
       isDragging = false
       dragWin = nil
@@ -162,7 +193,7 @@ local function onMouseEvent(e)
       isEasyResize = false
 
       -- Commit to actual final frame after macOS commits the drag
-      hs.timer.doAfter(0.02, function()
+      hs.timer.doAfter(0.03, function()
         dimmer.update(win or hs.window.focusedWindow())
       end)
     end
